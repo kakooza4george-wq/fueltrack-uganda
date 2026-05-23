@@ -9,9 +9,7 @@ export async function middleware(request: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
+        getAll() { return request.cookies.getAll(); },
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
@@ -26,20 +24,25 @@ export async function middleware(request: NextRequest) {
   );
 
   const { data: { user } } = await supabase.auth.getUser();
+  const pathname = request.nextUrl.pathname;
+  const isPublic = ["/login", "/auth"].some((r) => pathname.startsWith(r));
 
-  // If not logged in and not already on the login page → redirect to login
-  if (
-    !user &&
-    !request.nextUrl.pathname.startsWith("/login") &&
-    !request.nextUrl.pathname.startsWith("/auth")
-  ) {
+  if (!user && !isPublic) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
+    url.searchParams.set("redirectTo", pathname);
     return NextResponse.redirect(url);
   }
 
-  // If logged in and on login page → redirect to dashboard
-  if (user && request.nextUrl.pathname === "/login") {
+  if (user && pathname === "/login") {
+    const redirectTo = request.nextUrl.searchParams.get("redirectTo") ?? "/dashboard";
+    const url = request.nextUrl.clone();
+    url.pathname = redirectTo;
+    url.search = "";
+    return NextResponse.redirect(url);
+  }
+
+  if (user && pathname === "/") {
     const url = request.nextUrl.clone();
     url.pathname = "/dashboard";
     return NextResponse.redirect(url);
