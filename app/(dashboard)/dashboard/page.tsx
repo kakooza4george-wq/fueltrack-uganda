@@ -1,240 +1,295 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import Header from "@/components/layout/Header";
-import { VwOwnerDashboard, VwDailyStationSummary, VwCreditBalance, VwOmcAccountBalance } from "@/types/database";
-import { formatUGX, formatLitres, formatDate, today } from "@/utils";
-import { 
-  Fuel, TrendingUp, Building2, AlertTriangle, 
-  CreditCard, Truck, ArrowUpRight, Wallet, 
-  BarChart3, ArrowDownRight, Zap, ShoppingBag, Loader2
+import { useStation } from "@/hooks/useStation";
+import { formatUGX, formatLitres, today } from "@/utils";
+import {
+  TrendingUp, Fuel, AlertTriangle, Truck,
+  Clock, ArrowRight, CheckCircle
 } from "lucide-react";
-import Link from "next/link";
+
+interface StockLevel {
+  product_name: string;
+  product_code: string;
+  current_stock_litres: number;
+  station_name: string;
+}
+
+interface DailySummary {
+  station_name: string;
+  station_id: string;
+  total_revenue_ugx: number;
+  total_litres_sold: number;
+  cash_revenue: number;
+  momo_revenue: number;
+  airtel_revenue: number;
+  credit_revenue: number;
+}
+
+interface OmcBalance {
+  omc_name: string;
+  station_name: string;
+  current_balance_ugx: number;
+}
 
 export default function DashboardPage() {
-  const [todaySummary, setTodaySummary] = useState<VwOwnerDashboard | null>(null);
-  const [stationBreakdown, setStationBreakdown] = useState<VwDailyStationSummary[]>([]);
-  const [creditAlerts, setCreditAlerts] = useState<VwCreditBalance[]>([]);
-  const [omcBalances, setOmcBalances] = useState<VwOmcAccountBalance[]>([]);
+  const { activeStation } = useStation();
+  const [summary, setSummary] = useState<DailySummary[]>([]);
+  const [stock, setStock] = useState<StockLevel[]>([]);
+  const [omcBalances, setOmcBalances] = useState<OmcBalance[]>([]);
+  const [openShifts, setOpenShifts] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const date = today();
 
   useEffect(() => {
     const load = async () => {
+      setLoading(true);
       const supabase = createClient();
-      const [ownerRes, stationRes, creditRes, omcRes] = await Promise.all([
-        supabase.from("vw_owner_dashboard").select("*").eq("transaction_date", date).single(),
-        supabase.from("vw_daily_station_summary").select("*").eq("transaction_date", date).order("total_revenue_ugx", { ascending: false }),
-        supabase.from("vw_credit_balances").select("*").gt("outstanding_balance_ugx", 0).order("outstanding_balance_ugx", { ascending: false }).limit(5),
-        supabase.from("vw_omc_account_balance").select("*").gt("current_balance_ugx", 0).order("current_balance_ugx", { ascending: false }),
+
+      const [sumRes, stockRes, omcRes, shiftRes] = await Promise.all([
+        supabase
+          .from("vw_daily_station_summary")
+          .select("*")
+          .eq("transaction_date", date),
+        supabase
+          .from("vw_current_stock")
+          .select("product_name, product_code, current_stock_litres, station_name"),
+        supabase
+          .from("vw_omc_account_balance")
+          .select("omc_name, station_name, current_balance_ugx")
+          .gt("current_balance_ugx", 0),
+        supabase
+          .from("shifts")
+          .select("id", { count: "exact" })
+          .eq("status", "open")
+          .eq("shift_date", date),
       ]);
-      if (ownerRes.data) setTodaySummary(ownerRes.data);
-      if (stationRes.data) setStationBreakdown(stationRes.data);
-      if (creditRes.data) setCreditAlerts(creditRes.data);
+
+      if (sumRes.data) setSummary(sumRes.data);
+      if (stockRes.data) setStock(stockRes.data);
       if (omcRes.data) setOmcBalances(omcRes.data);
+      if (shiftRes.count !== null) setOpenShifts(shiftRes.count);
       setLoading(false);
     };
     load();
   }, [date]);
 
-  // Derived metrics for KAKU-style dashboard
-  const totalRevenue = todaySummary?.total_revenue_all_stations ?? 0;
-  const totalExpenses = 0; // Placeholder for now, would fetch from expenses table
-  const grossProfit = totalRevenue - totalExpenses;
-
-  const stats = [
-    { label: "Total Sales Today", value: formatUGX(totalRevenue), icon: TrendingUp, color: "text-emerald-600", bg: "bg-emerald-50", trend: "+12.2%" },
-    { label: "Total Purchases", value: formatUGX(0), icon: ShoppingBag, color: "text-blue-600", bg: "bg-blue-50", trend: "+8.7%" },
-    { label: "Gross Profit", value: formatUGX(grossProfit), icon: BarChart3, color: "text-purple-600", bg: "bg-purple-50", trend: "+15.3%" },
-    { label: "Total Expenses", value: formatUGX(totalExpenses), icon: Wallet, color: "text-rose-600", bg: "bg-rose-50", trend: "-7.2%" },
-  ];
+  const totalRevenue = summary.reduce((s, r) => s + (r.total_revenue_ugx || 0), 0);
+  const totalLitres = summary.reduce((s, r) => s + (r.total_litres_sold || 0), 0);
+  const totalOMCOwed = omcBalances.reduce((s, b) => s + (b.current_balance_ugx || 0), 0);
+  const lowStock = stock.filter((s) => s.current_stock_litres < 2000 && s.current_stock_litres > 0);
+  const emptyStock = stock.filter((s) => s.current_stock_litres <= 0);
 
   return (
     <>
-      <Header title="Business Intelligence Dashboard" />
-      <div className="p-6 space-y-8 max-w-[1600px] mx-auto">
-        
-        {/* KAKU Style Stat Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          {stats.map((stat) => {
+      <Header title="Dashboard" />
+      <div className="p-6 space-y-6">
+
+        {/* Alerts */}
+        {(emptyStock.length > 0 || lowStock.length > 0) && (
+          <div className="space-y-2">
+            {emptyStock.map((s, i) => (
+              <div key={i} className="flex items-center gap-3 bg-red-50 border border-red-300 rounded-xl px-4 py-3">
+                <AlertTriangle size={18} className="text-red-600 flex-shrink-0" />
+                <p className="text-red-700 text-sm font-semibold">
+                  {s.station_name} — {s.product_name} is completely empty. Record a delivery to continue sales.
+                </p>
+                <Link href="/deliveries/new" className="ml-auto btn-danger btn-sm whitespace-nowrap">
+                  Record Delivery
+                </Link>
+              </div>
+            ))}
+            {lowStock.map((s, i) => (
+              <div key={i} className="flex items-center gap-3 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3">
+                <AlertTriangle size={18} className="text-amber-600 flex-shrink-0" />
+                <p className="text-amber-700 text-sm font-medium">
+                  {s.station_name} — {s.product_name} is low: only {formatLitres(s.current_stock_litres)} remaining.
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Today's Quick Actions */}
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-bold text-gray-800">Today at a Glance</h2>
+            <span className="text-xs text-gray-400">{new Date().toLocaleDateString("en-UG", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Link href="/workflow" className="flex flex-col items-center gap-2 p-4 bg-blue-50 hover:bg-blue-100 rounded-xl border border-blue-200 transition-all text-center">
+              <CheckCircle size={24} className="text-blue-600" />
+              <span className="text-xs font-semibold text-blue-700">Today's Workflow</span>
+            </Link>
+            <Link href="/shifts/new" className="flex flex-col items-center gap-2 p-4 bg-green-50 hover:bg-green-100 rounded-xl border border-green-200 transition-all text-center">
+              <Clock size={24} className="text-green-600" />
+              <span className="text-xs font-semibold text-green-700">Open Shift</span>
+            </Link>
+            <Link href="/sales/new" className="flex flex-col items-center gap-2 p-4 bg-amber-50 hover:bg-amber-100 rounded-xl border border-amber-200 transition-all text-center">
+              <Fuel size={24} className="text-amber-600" />
+              <span className="text-xs font-semibold text-amber-700">Record Sale</span>
+            </Link>
+            <Link href="/deliveries/new" className="flex flex-col items-center gap-2 p-4 bg-purple-50 hover:bg-purple-100 rounded-xl border border-purple-200 transition-all text-center">
+              <Truck size={24} className="text-purple-600" />
+              <span className="text-xs font-semibold text-purple-700">Record Delivery</span>
+            </Link>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {[
+            { label: "Today's Revenue", value: formatUGX(totalRevenue), icon: TrendingUp, color: "text-green-600", bg: "bg-green-50" },
+            { label: "Litres Sold Today", value: formatLitres(totalLitres), icon: Fuel, color: "text-blue-600", bg: "bg-blue-50" },
+            { label: "OMC Balance Owed", value: formatUGX(totalOMCOwed), icon: Truck, color: "text-red-600", bg: "bg-red-50" },
+            { label: "Open Shifts", value: openShifts.toString(), icon: Clock, color: "text-amber-600", bg: "bg-amber-50" },
+          ].map((stat) => {
             const Icon = stat.icon;
             return (
-              <div key={stat.label} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
+              <div key={stat.label} className="stat-card">
                 <div className="flex items-start justify-between">
-                  <div className={`w-12 h-12 rounded-xl ${stat.bg} flex items-center justify-center flex-shrink-0 shadow-inner`}>
-                    <Icon size={24} className={stat.color} />
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">{stat.label}</p>
+                    <p className="text-2xl font-black text-gray-900">
+                      {loading
+                        ? <span className="inline-block w-24 h-7 bg-gray-100 rounded animate-pulse" />
+                        : stat.value}
+                    </p>
                   </div>
-                  <div className={`flex items-center gap-1 text-xs font-bold ${stat.trend.startsWith('+') ? 'text-emerald-600' : 'text-rose-600'} bg-gray-50 px-2 py-1 rounded-full`}>
-                    {stat.trend.startsWith('+') ? <TrendingUp size={12} /> : <ArrowDownRight size={12} />}
-                    {stat.trend}
+                  <div className={`w-10 h-10 rounded-xl ${stat.bg} flex items-center justify-center`}>
+                    <Icon size={20} className={stat.color} />
                   </div>
-                </div>
-                <div className="mt-4">
-                  <p className="text-sm font-semibold text-gray-500 uppercase tracking-wider">{stat.label}</p>
-                  <p className="text-2xl font-black text-gray-900 mt-1">
-                    {loading ? <span className="inline-block w-32 h-8 bg-gray-100 rounded animate-pulse" /> : stat.value}
-                  </p>
                 </div>
               </div>
             );
           })}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          
-          {/* Main Content Area */}
-          <div className="lg:col-span-8 space-y-8">
-            
-            {/* Station Performance */}
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="flex items-center justify-between px-6 py-5 border-b border-gray-50">
-                <div>
-                  <h2 className="text-lg font-black text-gray-800 flex items-center gap-2">
-                    <Building2 size={20} className="text-blue-600" />
-                    Station Performance
-                  </h2>
-                  <p className="text-xs text-gray-400 font-medium">Daily breakdown across all locations</p>
-                </div>
-                <Link href="/reports" className="flex items-center gap-1.5 px-4 py-2 bg-blue-50 text-blue-700 rounded-xl text-xs font-bold hover:bg-blue-100 transition-colors">
-                  Detailed Reports <ArrowUpRight size={14} />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+          {/* Today's sales by station */}
+          <div className="card overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+              <h3 className="font-bold text-gray-800">Today — Station Breakdown</h3>
+              <Link href="/reports" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                Full Reports <ArrowRight size={12} />
+              </Link>
+            </div>
+            {loading ? (
+              <div className="p-8 text-center text-gray-400 text-sm">Loading...</div>
+            ) : summary.length === 0 ? (
+              <div className="p-8 text-center">
+                <p className="text-gray-400 text-sm">No sales recorded today yet.</p>
+                <Link href="/sales/new" className="btn-primary btn-sm inline-flex mt-3">
+                  Record First Sale
                 </Link>
               </div>
-              
-              {loading ? (
-                <div className="p-12 text-center text-gray-400">
-                  <Loader2 size={32} className="animate-spin mx-auto mb-2 text-blue-600" />
-                  <p className="text-sm">Analyzing station data...</p>
-                </div>
-              ) : stationBreakdown.length === 0 ? (
-                <div className="p-12 text-center">
-                  <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <Zap size={24} className="text-gray-300" />
-                  </div>
-                  <p className="text-gray-500 font-bold">No sales data for today yet.</p>
-                  <Link href="/sales/new" className="mt-4 inline-flex btn-primary px-6 py-2.5">Capture First Sale</Link>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="bg-gray-50/50">
-                        <th className="px-6 py-4 text-xs font-black text-gray-400 uppercase tracking-widest">Station</th>
-                        <th className="px-6 py-4 text-xs font-black text-gray-400 uppercase tracking-widest text-right">Litres</th>
-                        <th className="px-6 py-4 text-xs font-black text-gray-400 uppercase tracking-widest text-right">Revenue</th>
-                        <th className="px-6 py-4 text-xs font-black text-gray-400 uppercase tracking-widest text-right">Cash</th>
-                        <th className="px-6 py-4 text-xs font-black text-gray-400 uppercase tracking-widest text-right">Credit</th>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Station</th>
+                      <th className="text-right">Litres</th>
+                      <th className="text-right">Revenue</th>
+                      <th className="text-right">Cash</th>
+                      <th className="text-right">Credit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.map((s) => (
+                      <tr key={s.station_id}>
+                        <td className="font-semibold text-gray-800">{s.station_name}</td>
+                        <td className="text-right text-gray-600">{formatLitres(s.total_litres_sold)}</td>
+                        <td className="text-right font-bold text-green-700">{formatUGX(s.total_revenue_ugx)}</td>
+                        <td className="text-right text-gray-500">{formatUGX(s.cash_revenue)}</td>
+                        <td className="text-right text-amber-600">{formatUGX(s.credit_revenue)}</td>
                       </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-50">
-                      {stationBreakdown.map((s) => (
-                        <tr key={s.station_id} className="hover:bg-blue-50/30 transition-colors group">
-                          <td className="px-6 py-4">
-                            <p className="font-bold text-gray-800 group-hover:text-blue-700 transition-colors">{s.station_name}</p>
-                            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">Active Station</p>
-                          </td>
-                          <td className="px-6 py-4 text-right font-bold text-gray-600">{formatLitres(s.total_litres_sold)}</td>
-                          <td className="px-6 py-4 text-right font-black text-emerald-700">{formatUGX(s.total_revenue_ugx)}</td>
-                          <td className="px-6 py-4 text-right font-bold text-gray-500">{formatUGX(s.cash_revenue)}</td>
-                          <td className="px-6 py-4 text-right font-bold text-amber-700">{formatUGX(s.credit_revenue)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            {/* Quick Actions Bar */}
-            <div className="bg-blue-900 rounded-2xl p-6 shadow-xl shadow-blue-200 text-white">
-              <h3 className="text-lg font-black mb-4 flex items-center gap-2">
-                <Zap size={20} className="text-amber-400" />
-                Quick Operations
-              </h3>
-              <div className="flex flex-wrap gap-4">
-                <Link href="/shifts/new" className="px-6 py-3 bg-white text-blue-900 rounded-xl font-black text-sm hover:bg-amber-400 transition-colors shadow-lg">Start New Shift</Link>
-                <Link href="/deliveries/new" className="px-6 py-3 bg-blue-800 text-white border border-blue-700 rounded-xl font-black text-sm hover:bg-blue-700 transition-colors">Record Delivery</Link>
-                <Link href="/sales/new" className="px-6 py-3 bg-blue-800 text-white border border-blue-700 rounded-xl font-black text-sm hover:bg-blue-700 transition-colors">New Sale Entry</Link>
-                <Link href="/expenses/new" className="px-6 py-3 bg-blue-800 text-white border border-blue-700 rounded-xl font-black text-sm hover:bg-blue-700 transition-colors">Log Expense</Link>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            </div>
+            )}
           </div>
 
-          {/* Sidebar Area */}
-          <div className="lg:col-span-4 space-y-8">
-            
-            {/* Financial Alerts */}
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="px-6 py-5 border-b border-gray-50 bg-amber-50/30">
-                <h3 className="text-sm font-black text-gray-800 flex items-center gap-2">
-                  <AlertTriangle size={18} className="text-amber-500" />
-                  Critical Credit Alerts
-                </h3>
+          {/* Stock levels */}
+          <div className="card overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+              <h3 className="font-bold text-gray-800">Live Stock Levels</h3>
+              <Link href="/stock" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                Manage Stock <ArrowRight size={12} />
+              </Link>
+            </div>
+            {loading ? (
+              <div className="p-8 text-center text-gray-400 text-sm">Loading...</div>
+            ) : stock.length === 0 ? (
+              <div className="p-8 text-center">
+                <p className="text-gray-400 text-sm">No stock data yet.</p>
+                <Link href="/stock" className="btn-primary btn-sm inline-flex mt-3">
+                  Set Opening Stock
+                </Link>
               </div>
+            ) : (
               <div className="divide-y divide-gray-50">
-                {loading ? (
-                  <div className="p-6 text-center text-gray-400 text-xs">Scanning ledgers...</div>
-                ) : creditAlerts.length === 0 ? (
-                  <div className="p-8 text-center text-gray-400 text-sm font-medium italic">No credit risks detected.</div>
-                ) : (
-                  creditAlerts.map((c) => (
-                    <div key={c.credit_customer_id} className="px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors">
-                      <div className="min-w-0">
-                        <p className="text-sm font-black text-gray-800 truncate">{c.customer_name}</p>
-                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Limit: {formatUGX(c.credit_limit_ugx)}</p>
+                {stock.map((s, i) => {
+                  const isLow = s.current_stock_litres < 2000;
+                  const isEmpty = s.current_stock_litres <= 0;
+                  return (
+                    <div key={i} className="px-5 py-3 flex items-center justify-between">
+                      <div>
+                        <p className="font-semibold text-gray-800 text-sm">{s.product_name}</p>
+                        <p className="text-xs text-gray-400">{s.station_name}</p>
                       </div>
                       <div className="text-right">
-                        <p className="text-sm font-black text-rose-600">{formatUGX(c.outstanding_balance_ugx)}</p>
-                        <p className="text-[10px] text-rose-400 font-bold uppercase">Overdue</p>
+                        <p className={`font-black text-lg ${isEmpty ? "text-red-600" : isLow ? "text-amber-600" : "text-green-600"}`}>
+                          {isEmpty ? "EMPTY" : formatLitres(s.current_stock_litres)}
+                        </p>
+                        {isLow && !isEmpty && (
+                          <p className="text-xs text-amber-500">Low stock</p>
+                        )}
                       </div>
                     </div>
-                  ))
-                )}
+                  );
+                })}
               </div>
-            </div>
-
-            {/* Supply Chain Status */}
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="px-6 py-5 border-b border-gray-50 bg-blue-50/30">
-                <h3 className="text-sm font-black text-gray-800 flex items-center gap-2">
-                  <Truck size={18} className="text-blue-600" />
-                  OMC Account Balances
-                </h3>
-              </div>
-              <div className="divide-y divide-gray-50">
-                {loading ? (
-                  <div className="p-6 text-center text-gray-400 text-xs">Fetching balances...</div>
-                ) : omcBalances.length === 0 ? (
-                  <div className="p-8 text-center text-gray-400 text-sm font-medium italic">No outstanding supplier payments.</div>
-                ) : (
-                  omcBalances.map((b) => (
-                    <div key={`${b.omc_id}-${b.station_id}`} className="px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors">
-                      <div>
-                        <p className="text-sm font-black text-gray-800">{b.omc_name}</p>
-                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">{b.station_name}</p>
-                      </div>
-                      <p className="text-sm font-black text-blue-700">{formatUGX(b.current_balance_ugx)}</p>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            {/* Mini Calendar / Status */}
-            <div className="bg-emerald-900 rounded-2xl p-6 text-white shadow-xl shadow-emerald-100">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-[10px] font-black uppercase tracking-widest text-emerald-400">Current Business Date</p>
-                <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
-              </div>
-              <p className="text-xl font-black">{formatDate(date)}</p>
-              <div className="mt-4 pt-4 border-t border-emerald-800 flex items-center justify-between">
-                <p className="text-xs font-bold text-emerald-200">System Status</p>
-                <p className="text-xs font-black text-emerald-400 uppercase tracking-tighter">Operational</p>
-              </div>
-            </div>
-
+            )}
           </div>
         </div>
+
+        {/* OMC Balances */}
+        {omcBalances.length > 0 && (
+          <div className="card overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <h3 className="font-bold text-gray-800">Outstanding OMC Balances</h3>
+              <Link href="/suppliers" className="text-xs text-blue-600 hover:underline">
+                Manage Suppliers
+              </Link>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>OMC</th>
+                    <th>Station</th>
+                    <th className="text-right">Balance Owed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {omcBalances.map((b, i) => (
+                    <tr key={i}>
+                      <td className="font-semibold text-gray-800">{b.omc_name}</td>
+                      <td className="text-gray-600">{b.station_name}</td>
+                      <td className="text-right font-bold text-red-600">{formatUGX(b.current_balance_ugx)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

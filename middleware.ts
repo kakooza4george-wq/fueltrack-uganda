@@ -30,24 +30,18 @@ export async function middleware(request: NextRequest) {
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
-    url.searchParams.set("redirectTo", pathname);
     return NextResponse.redirect(url);
   }
-
   if (user && pathname === "/login") {
-    const redirectTo = request.nextUrl.searchParams.get("redirectTo") ?? "/dashboard";
     const url = request.nextUrl.clone();
-    url.pathname = redirectTo;
-    url.search = "";
+    url.pathname = "/dashboard";
     return NextResponse.redirect(url);
   }
-
   if (user && pathname === "/") {
     const url = request.nextUrl.clone();
     url.pathname = "/dashboard";
     return NextResponse.redirect(url);
   }
-
   return supabaseResponse;
 }
 

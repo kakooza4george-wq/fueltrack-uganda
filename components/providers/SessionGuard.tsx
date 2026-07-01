@@ -15,6 +15,13 @@ export default function SessionGuard({ children }: { children: React.ReactNode }
   const lastActivity = useRef<number>(Date.now());
   const countdownTimer = useRef<NodeJS.Timeout | null>(null);
 
+  const signOut = useCallback(async () => {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  }, [router]);
+
   const resetActivity = useCallback(() => {
     lastActivity.current = Date.now();
     if (showWarning) {
@@ -24,27 +31,12 @@ export default function SessionGuard({ children }: { children: React.ReactNode }
     }
   }, [showWarning]);
 
-  const signOut = useCallback(async (reason: "timeout" | "manual") => {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      await supabase.from("login_audit_log").insert({
-        email: user.email ?? "unknown",
-        action: reason === "timeout" ? "session_timeout" : "manual_logout",
-        user_agent: navigator.userAgent,
-      });
-    }
-    await supabase.auth.signOut();
-    router.push("/login");
-    router.refresh();
-  }, [router]);
-
   useEffect(() => {
     if (!showWarning) return;
     setCountdown(300);
     countdownTimer.current = setInterval(() => {
       setCountdown((prev) => {
-        if (prev <= 1) { clearInterval(countdownTimer.current!); signOut("timeout"); return 0; }
+        if (prev <= 1) { clearInterval(countdownTimer.current!); signOut(); return 0; }
         return prev - 1;
       });
     }, 1000);
@@ -54,7 +46,7 @@ export default function SessionGuard({ children }: { children: React.ReactNode }
   useEffect(() => {
     const check = setInterval(() => {
       const idle = Date.now() - lastActivity.current;
-      if (idle >= INACTIVITY_LIMIT) { signOut("timeout"); }
+      if (idle >= INACTIVITY_LIMIT) { signOut(); }
       else if (idle >= WARNING_AT && !showWarning) { setShowWarning(true); }
     }, 30000);
     return () => clearInterval(check);
@@ -67,7 +59,8 @@ export default function SessionGuard({ children }: { children: React.ReactNode }
     return () => events.forEach((e) => window.removeEventListener(e, handler));
   }, [resetActivity]);
 
-  const fmt = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+  const fmt = (s: number) =>
+    `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 
   return (
     <>
@@ -82,22 +75,20 @@ export default function SessionGuard({ children }: { children: React.ReactNode }
             <div className="text-center mb-6">
               <h2 className="text-xl font-bold text-gray-800 mb-2">Session Timeout Warning</h2>
               <p className="text-gray-500 text-sm">
-                You have been inactive for 25 minutes. You will be signed out in:
+                You have been inactive. You will be signed out in:
               </p>
-              <div className="mt-4 text-5xl font-bold text-amber-600 font-mono">{fmt(countdown)}</div>
-              <p className="text-xs text-gray-400 mt-1">minutes remaining</p>
+              <div className="mt-4 text-5xl font-black text-amber-600 font-mono">
+                {fmt(countdown)}
+              </div>
             </div>
             <div className="flex gap-3">
               <button onClick={resetActivity} className="btn-primary flex-1 justify-center py-3">
-                I am Still Here — Continue
+                I am Still Here
               </button>
-              <button onClick={() => signOut("manual")} className="btn-secondary px-4" title="Sign Out">
+              <button onClick={signOut} className="btn-secondary px-4" title="Sign Out Now">
                 <LogOut size={18} />
               </button>
             </div>
-            <p className="text-center text-xs text-gray-400 mt-4">
-              Unsaved data may be lost if you are signed out
-            </p>
           </div>
         </div>
       )}
