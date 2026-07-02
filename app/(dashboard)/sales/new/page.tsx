@@ -132,35 +132,53 @@ export default function NewSalePage() {
 
     let finalLitres: number;
     let finalAmount: number;
+    let discountUGX = 0;
 
     if (entryMode === "by_amount") {
-      finalAmount = parseFloat(amountUGX || "0");
-      finalLitres = finalAmount / price;
+      finalAmount  = parseFloat(amountUGX || "0");
+      // Round litres to 3 decimal places
+      finalLitres  = Math.round((finalAmount / price) * 1000) / 1000;
+      // Calculate what the DB will compute as net_amount
+      const theoreticalAmount = Math.round(finalLitres * price * 100) / 100;
+      // Use discount to absorb any rounding difference
+      // net_amount_ugx = (quantity * price) - discount_ugx
+      // We want net_amount_ugx = finalAmount
+      // So: discount_ugx = (quantity * price) - finalAmount
+      discountUGX  = Math.round((theoreticalAmount - finalAmount) * 100) / 100;
     } else {
-      finalLitres = parseFloat(quantityLitres || "0");
-      finalAmount = finalLitres * price;
+      finalLitres  = parseFloat(quantityLitres || "0");
+      finalAmount  = Math.round(finalLitres * price * 100) / 100;
     }
 
     const selectedProduct = products.find((p) => p.id === productId);
-    if (!selectedProduct?.is_fuel && !quantityLitres) { setError("Enter quantity."); return; }
+    if (!selectedProduct?.is_fuel && !quantityLitres) {
+      setError("Enter quantity."); return;
+    }
     if (finalLitres <= 0) { setError("Enter a valid amount or quantity."); return; }
 
     setSaving(true); setError("");
     const supabase = createClient();
 
     const { error: err } = await supabase.from("sales_transactions").insert({
-      station_id: stationId, shift_id: shiftId || null,
-      product_id: productId, transaction_date: transactionDate,
-      transaction_time: transactionTime || null,
-      quantity: Math.round(finalLitres * 1000) / 1000,
-      unit_price_ugx: price, discount_ugx: 0,
-      payment_type: paymentType,
-      momo_reference: momoRef || null, fuel_card_number: fuelCardNum || null,
-      lpo_number: lpoNumber || null,
-      credit_customer_id: creditCustomerId || null,
-      vehicle_reg: vehicleReg || null, driver_name: driverName || null,
-      efd_receipt_number: efdNumber || null,
-      entered_by: enteredBy || null, notes: notes || null,
+      station_id:          stationId,
+      shift_id:            shiftId || null,
+      product_id:          productId,
+      transaction_date:    transactionDate,
+      transaction_time:    transactionTime || null,
+      quantity:            finalLitres,
+      unit_price_ugx:      price,
+      discount_ugx:        discountUGX,
+      amount_entered_ugx:  finalAmount,
+      payment_type:        paymentType,
+      momo_reference:      momoRef || null,
+      fuel_card_number:    fuelCardNum || null,
+      lpo_number:          lpoNumber || null,
+      credit_customer_id:  creditCustomerId || null,
+      vehicle_reg:         vehicleReg || null,
+      driver_name:         driverName || null,
+      efd_receipt_number:  efdNumber || null,
+      entered_by:          enteredBy || null,
+      notes:               notes || null,
     });
 
     if (err) {
@@ -173,10 +191,13 @@ export default function NewSalePage() {
 
     if (paymentType === "credit" && creditCustomerId) {
       await supabase.from("credit_account_transactions").insert({
-        credit_customer_id: creditCustomerId, station_id: stationId,
-        transaction_date: transactionDate, entry_type: "charge",
-        amount_ugx: finalAmount, entered_by: enteredBy || null,
-        notes: `Fuel sale — ${vehicleReg ?? ""}`,
+        credit_customer_id: creditCustomerId,
+        station_id:         stationId,
+        transaction_date:   transactionDate,
+        entry_type:         "charge",
+        amount_ugx:         finalAmount,
+        entered_by:         enteredBy || null,
+        notes:              `Fuel sale — ${vehicleReg ?? ""}`,
       });
     }
 
