@@ -66,9 +66,14 @@ export default function NewSalePage() {
     if (!stationId) return;
     const load = async () => {
       const supabase = createClient();
-      const { data } = await supabase.from("shifts").select("id, shift_type, shift_date, status")
-        .eq("station_id", stationId).in("status", ["open", "closed"])
-        .order("shift_date", { ascending: false }).limit(20);
+      const { data } = await supabase
+        .from("shifts")
+        .select("id, shift_type, shift_date, shift_sequence, supervisor_name")
+        .eq("station_id", stationId)
+        .eq("status", "open")
+        .order("shift_date", { ascending: false })
+        .order("shift_type")
+        .limit(20);
       if (data) setShifts(data);
     };
     load();
@@ -156,6 +161,10 @@ export default function NewSalePage() {
     }
     if (finalLitres <= 0) { setError("Enter a valid amount or quantity."); return; }
 
+    if (!shiftId) {
+      setError("Select an open shift before saving a sale.");
+      return;
+    }
     setSaving(true); setError("");
     const supabase = createClient();
 
@@ -238,16 +247,39 @@ export default function NewSalePage() {
                 </select>
               </div>
               <div>
-                <label className="form-label">Link to Shift</label>
-                <select className="form-select" value={shiftId}
-                  onChange={(e) => setShiftId(e.target.value)}>
-                  <option value="">No shift selected</option>
-                  {shifts.map((sh) => (
-                    <option key={sh.id} value={sh.id}>
-                      {sh.shift_date} — {sh.shift_type} ({sh.status})
-                    </option>
-                  ))}
-                </select>
+                <label className="form-label">
+                  Shift *
+                  <span className="ml-1 text-xs font-normal text-gray-400">
+                    All sales must be recorded under an open shift
+                  </span>
+                </label>
+                {shifts.length === 0 ? (
+                  <div className="bg-amber-50 border border-amber-300 rounded-xl px-4 py-3">
+                    <p className="text-amber-700 text-sm font-semibold">
+                      No open shifts for this station
+                    </p>
+                    <p className="text-amber-600 text-xs mt-0.5">
+                      You must open a shift before recording sales.
+                    </p>
+                    <Link
+                      href="/shifts/new"
+                      className="inline-flex items-center gap-1.5 mt-2 text-xs font-semibold text-blue-700 hover:underline">
+                      → Open a Shift Now
+                    </Link>
+                  </div>
+                ) : (
+                  <select className="form-select" value={shiftId}
+                    onChange={(e) => setShiftId(e.target.value)} required>
+                    <option value="">Select open shift...</option>
+                    {shifts.map((sh) => (
+                      <option key={sh.id} value={sh.id}>
+                        {sh.shift_date} — {sh.shift_type}
+                        {sh.shift_sequence > 1 ? ` #${sh.shift_sequence}` : ""}
+                        {sh.supervisor_name ? ` (${sh.supervisor_name})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
               <div>
                 <label className="form-label">Date *</label>
@@ -499,7 +531,7 @@ export default function NewSalePage() {
           <div className="flex justify-end gap-3 pb-6">
             <Link href="/sales" className="btn-secondary">Cancel</Link>
             <button type="submit" className="btn-primary px-8"
-              disabled={saving || !!stockError || isBlocked}>
+              disabled={saving || !!stockError || isBlocked || !shiftId}>
               {saving ? <><Loader2 size={16} className="animate-spin" /> Saving...</> : "Save Sale"}
             </button>
           </div>
